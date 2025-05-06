@@ -1,15 +1,49 @@
-# Intro
+# Chess Opening Trainer
 
-This is a chess opening trainer, which as of now supports 4 openings with each 5 lines.
+This is a chess opening trainer that supports 4 openings with 5 lines each. After completing the openings, Stockfish takes over and plays against you at an ELO of about 1300.
 
-After the openings are completed, stockfish takes over and plays against you at an elo of about 1300. 
+## Features
+- Interactive chess board with drag-and-drop piece movement
+- Opening training with multiple variations
+- Stockfish integration for post-opening play
+- Real-time position evaluation
+- Opening and line selection interface
 
-For Stockfish to work tho, you need to insert the path to your own stockfish binary on your computer in the main.py file.
+## Requirements
+- Python 3.8 or higher
+- Stockfish chess engine (you need to provide the path to your Stockfish binary in config.py)
 
 ## Setup
 
-Create a python venv with python 3.8 or 3.12, also use these version to run the programm. For reference I used version 3.8.20. on my ubuntu system. But on my macOS system I used 3.12.7, otherwise it didnt work for whatever reason. Also for Windows using uv as a version manager I was able to run my program with python version=3.9.20. So try these versions first.
+1. Create a Python virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
 
-then run: 'pip install -r requirements.txt'
+2. Install the required packages:
+```bash
+pip install -r requirements.txt
+```
 
-to then start the programm run: 'python main.py' 
+3. Edit `config.py` and set the path to your Stockfish binary:
+```python
+STOCKFISH_PATH = "/path/to/your/stockfish"
+```
+
+4. Run the program:
+```bash
+python main.py
+```
+
+## Controls
+- Click and drag pieces to move them
+- Use the dropdown menus to select different openings and lines
+- Click "Reset Position" to start over
+
+## System Requirements
+- For Ubuntu: No additional system packages required
+- For macOS: No additional system packages required
+- For Windows: No additional system packages required
+
+The program now uses PyQt5 for the interface, which provides better cross-platform compatibility and performance compared to the previous Pygame implementation. 

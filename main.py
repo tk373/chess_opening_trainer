@@ -1,11 +1,13 @@
 import sys
-import pygame
 import chess
 import chess.svg
-import io
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                            QHBoxLayout, QLabel, QPushButton, QComboBox, QProgressBar, QFrame)
+from PyQt5.QtSvg import QSvgWidget, QSvgRenderer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPoint
+from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QCursor, QImage
+import os
 import time
-from cairosvg import svg2png
-from threading import Thread
 from config import (
     BOARD_SIZE,
     EXTRA_SPACE,
@@ -20,341 +22,568 @@ from config import (
     SELECTED_OPENING,
     SCALING_FACTOR,
 )
-from PIL import Image
-from io import BytesIO
-from xml.etree import ElementTree as ET
 
-# Initialize other global variables
-white_eval = None
-black_eval = None
-opening_index = 0  # Index for the current move within the selected line 
+# Debug function
+def debug_print(message):
+    print(f"DEBUG: {message}")
+    sys.stdout.flush()  # Force output to appear immediately
 
-# Set up the display
-screen = pygame.display.set_mode(SIZE, pygame.DOUBLEBUF)
-pygame.display.set_caption('Chess Opening')
-
-def analyze_with_stockfish():
-    global white_eval, black_eval
-    stockfish.set_fen_position(board.fen())
-    
-    try:
-        evaluation = stockfish.get_evaluation()
-    except Exception as e:
-        print(f"Error during Stockfish evaluation: {e}")
-        evaluation = {'type': 'cp', 'value': 0}
-
-    if 'type' in evaluation and evaluation['type'] == 'cp':
-        white_eval = evaluation['value'] / 100.0
-        black_eval = -white_eval
-    elif 'type' in evaluation and evaluation['type'] == 'mate':
-        if evaluation['value'] > 0:
-            white_eval = f"M{evaluation['value']}"
-            black_eval = f"M{-evaluation['value']}"
+class EvalBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.white_eval = 0.0
+        self.black_eval = 0.0
+        self.setMinimumHeight(40)
+        self.setMaximumHeight(40)
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        width = self.width()
+        height = self.height()
+        
+        # Convert evaluation to a ratio
+        if isinstance(self.white_eval, str):
+            # Handle mate scores
+            if self.white_eval.startswith('M'):
+                white_ratio = 1.0 if not self.white_eval[1] == '-' else 0.0
         else:
-            white_eval = f"M{-evaluation['value']}"
-            black_eval = f"M{evaluation['value']}"
-    else:
-        white_eval = 0.0  # Neutral value for initial load
-        black_eval = 0.0
+            max_eval = 10
+            min_eval = -10
+            white_ratio = max(min((self.white_eval + max_eval) / (max_eval - min_eval), 1.0), 0.0)
+        
+        black_ratio = 1.0 - white_ratio
+        
+        # Draw white part
+        white_width = int(width * white_ratio)
+        painter.fillRect(0, 0, white_width, height, QColor(255, 255, 255))
+        
+        # Draw black part
+        black_width = int(width * black_ratio)
+        painter.fillRect(white_width, 0, black_width, height, QColor(0, 0, 0))
+        
+        # Draw outline
+        painter.setPen(QPen(Qt.black, 3))
+        painter.drawRect(0, 0, width-1, height-1)
+        
+    def set_eval(self, white_eval, black_eval):
+        self.white_eval = white_eval
+        self.black_eval = black_eval
+        self.update()
 
-def analyze_with_stockfish_and_render():
-    with BOARD_LOCK:
-        analyze_with_stockfish()
-        global board_surface
-        board_surface = render_board_surface()
-        draw_board()
-
-# Pre-render the board surface
-def render_board_surface():
-    svg_data = chess.svg.board(board, size=BOARD_SIZE, coordinates=True)
-    png_data = svg2png(bytestring=svg_data.encode('utf-8'))
-    image = pygame.image.load(io.BytesIO(png_data))
-    return pygame.transform.scale(image, (int(BOARD_SIZE), int(BOARD_SIZE)))
-
-board_surface = render_board_surface()
-
-# Function to draw the board
-def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possible_moves=None):
-    # Draw the cached board surface
-    screen.blit(board_surface, (0, 0))
-
-    # Draw possible moves if a square is selected
-    if possible_moves is not None:
-        for target_square in possible_moves:
-            target_col = chess.square_file(target_square)
-            target_row = 7 - chess.square_rank(target_square)
-            center_x = int(MARGIN + target_col * SQUARE_SIZE + SQUARE_SIZE / 2)
-            center_y = int(MARGIN + target_row * SQUARE_SIZE + SQUARE_SIZE / 2)
-            pygame.draw.circle(screen, (128, 128, 128), (center_x, center_y), SQUARE_SIZE // 6)
-
-    if dragging_piece is not None and mouse_pos is not None:
-       piece = board.piece_at(dragging_piece)
-       if piece:
-           piece_svg = chess.svg.piece(piece, size=SQUARE_SIZE)
-           piece_png = svg2png(bytestring=piece_svg.encode('utf-8'))
-           piece_image = pygame.image.load(io.BytesIO(piece_png))
-           piece_image = pygame.transform.scale(piece_image, (int(SQUARE_SIZE), int(SQUARE_SIZE)))
-           screen.blit(piece_image, (mouse_pos[0] - SQUARE_SIZE // 2, mouse_pos[1] - SQUARE_SIZE // 2))
-
-    # Add space for additional information at the bottom
-    pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(0, BOARD_SIZE, SIZE[0], EXTRA_SPACE))
-
-    # Draw the evaluation bar
-    eval_bar_height = 30  # Height of the evaluation bar
-    eval_bar_width = BOARD_SIZE  # Full width of the board
-    eval_bar_x = 0  # Start at the left edge
-    eval_bar_y = BOARD_SIZE  # Position it just below the board 
-
-    if white_eval is None:
-        white_eval_value = 0.0
-    else:
-        white_eval_value = white_eval
-
-    if isinstance(white_eval_value, str):
-        if white_eval_value.startswith('M'):
-            white_ratio = 1.0 if white_eval_value[1] == '-' else 0.0
-        else:
-            white_ratio = 0.5
-    else:
-        max_eval = 10
-        min_eval = -10
-        white_ratio = max(min((white_eval_value + max_eval) / (max_eval - min_eval), 1.0), 0.0)
+class ChessBoard(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.selected_square = None
+        self.dragging_piece = None
+        self.dragging_pixmap = None
+        self.drag_position = None
+        self.possible_moves = None
+        self.opening_index = 0
+        self.in_opening_phase = True
+        self.show_dragged_piece = False
+        self.debug_count = 0
+        
+        # Create main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(10)  # Space between components
+        
+        # Create the board widget with a border for visibility
+        self.board_widget = QWidget()
+        self.board_widget.setFixedSize(BOARD_SIZE, BOARD_SIZE)
+        self.board_widget.setStyleSheet("border: 2px solid black;")
+        main_layout.addWidget(self.board_widget)
+        
+        # Create SVG widget for the board
+        board_layout = QVBoxLayout(self.board_widget)
+        board_layout.setContentsMargins(0, 0, 0, 0)
+        self.svg_widget = QSvgWidget(self.board_widget)
+        self.svg_widget.setFixedSize(BOARD_SIZE, BOARD_SIZE)
+        board_layout.addWidget(self.svg_widget)
+        
+        # Create evaluation bar
+        self.eval_bar = EvalBar()
+        main_layout.addWidget(self.eval_bar)
+        
+        # Create evaluation text label
+        self.eval_text = QLabel("White: 0.00 | Black: 0.00")
+        self.eval_text.setAlignment(Qt.AlignCenter)
+        self.eval_text.setStyleSheet("background-color: white; font-weight: bold; font-size: 12pt; border: 1px solid black;")
+        main_layout.addWidget(self.eval_text)
+        
+        # Create opening info label
+        self.opening_info = QLabel("Opening: (None selected)")
+        self.opening_info.setAlignment(Qt.AlignCenter)
+        self.opening_info.setStyleSheet("background-color: white; font-weight: bold; font-size: 12pt; border: 1px solid black;")
+        main_layout.addWidget(self.opening_info)
+        
+        # Debug label
+        self.debug_label = QLabel("Debug: No piece dragging")
+        self.debug_label.setAlignment(Qt.AlignCenter)
+        self.debug_label.setStyleSheet("background-color: yellow; color: black; font-weight: bold;")
+        main_layout.addWidget(self.debug_label)
+        
+        # Initialize the board
+        self.update_board()
+        self.analyze_position()
+        
+        # Enable mouse tracking and install custom event handling
+        self.board_widget.setMouseTracking(True)
+        self.board_widget.installEventFilter(self)
+        
+        # Save original paint event for board_widget
+        self.original_paint_event = self.board_widget.paintEvent
+        
+        # Override paint event
+        def custom_paint_event(event):
+            debug_print(f"Custom paint event called: {self.debug_count}")
+            self.debug_count += 1
+            
+            # First paint the SVG widget (the board)
+            painter = QPainter(self.board_widget)
+            self.svg_widget.render(painter)
+            
+            # Then paint our dragged piece if needed
+            if self.show_dragged_piece and self.dragging_piece and self.drag_position and self.dragging_pixmap:
+                debug_print(f"Drawing piece at {self.drag_position.x()}, {self.drag_position.y()}")
+                piece_x = int(self.drag_position.x() - self.dragging_pixmap.width() // 2)
+                piece_y = int(self.drag_position.y() - self.dragging_pixmap.height() // 2)
+                
+                # Remove the red circle, just draw the piece
+                painter.drawPixmap(piece_x, piece_y, self.dragging_pixmap)
+                
+                # Update debug info
+                self.debug_label.setText(f"Piece at ({piece_x}, {piece_y}), size: {self.dragging_pixmap.width()}x{self.dragging_pixmap.height()}")
+            else:
+                # Update debug info with state
+                states = []
+                if not self.show_dragged_piece: states.append("show_dragged_piece=False")
+                if not self.dragging_piece: states.append("dragging_piece=None")
+                if not self.drag_position: states.append("drag_position=None") 
+                if not self.dragging_pixmap: states.append("dragging_pixmap=None")
+                self.debug_label.setText(f"Not drawing piece: {', '.join(states)}")
+                
+            painter.end()
+        
+        # Assign custom paint event
+        self.board_widget.paintEvent = custom_paint_event
+        
+    def eventFilter(self, obj, event):
+        if obj == self.board_widget:
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                debug_print("Mouse press detected")
+                self.handle_mouse_press(event)
+                return True
+            elif event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton:
+                debug_print("Mouse release detected")
+                self.handle_mouse_release(event)
+                return True
+            elif event.type() == event.MouseMove and self.dragging_piece:
+                # Only log occasionally to avoid flooding
+                if self.debug_count % 10 == 0:
+                    debug_print(f"Mouse move: {event.x()}, {event.y()}")
+                self.handle_mouse_move(event)
+                return True
+        return super().eventFilter(obj, event)
     
-    black_ratio = 1.0 - white_ratio
+    def update_board(self, dragging_square=None):
+        # Generate SVG with the dragging piece hidden if we're dragging
+        last_move = board.peek() if board.move_stack else None
+        check_square = board.king(board.turn) if board.is_check() else None
+        
+        # If we're dragging a piece, remove it from the board view
+        if dragging_square is not None:
+            debug_print(f"Updating board with dragging_square={dragging_square}")
+            # Create a temporary board for drawing
+            temp_board = chess.Board(board.fen())
+            # Remove the piece being dragged
+            temp_board.remove_piece_at(dragging_square)
+            # Generate SVG showing the board without the dragged piece
+            svg_data = chess.svg.board(
+                temp_board,
+                size=BOARD_SIZE,
+                coordinates=True,
+                lastmove=last_move,
+                check=check_square
+            )
+        else:
+            # Regular board update
+            svg_data = chess.svg.board(
+                board,
+                size=BOARD_SIZE,
+                coordinates=True,
+                lastmove=last_move,
+                check=check_square
+            )
+            
+        self.svg_widget.load(bytes(svg_data, 'utf-8'))
+        
+        # Update opening info
+        current_opening = SELECTED_OPENING
+        current_line_name = "Unknown"
+        if hasattr(self.parent_window, 'opening_selector') and hasattr(self.parent_window, 'line_selector'):
+            current_opening = self.parent_window.opening_selector.currentText()
+            current_line_name = self.parent_window.line_selector.currentText()
+        
+        # Update opening info label
+        moves_left = len(SELECTED_LINE['moves']) - self.opening_index if SELECTED_LINE and 'moves' in SELECTED_LINE else 0
+        self.opening_info.setText(f"Opening: {current_opening} - {current_line_name} (Moves Left: {moves_left})")
+        
+    def handle_mouse_press(self, event):
+        x, y = event.x(), event.y()
+        file = int(x / SQUARE_SIZE)
+        rank = 7 - int(y / SQUARE_SIZE)
+        
+        debug_print(f"Mouse press at ({x}, {y}) -> square ({file}, {rank})")
+        
+        if 0 <= file < 8 and 0 <= rank < 8:
+            square = chess.square(file, rank)
+            piece = board.piece_at(square)
+            
+            if piece and piece.color == board.turn:
+                debug_print(f"Selected piece: {piece.symbol()} at square {square}")
+                self.selected_square = square
+                self.dragging_piece = piece
+                
+                try:
+                    # Create a custom cursor with the piece image
+                    debug_print("Creating pixmap for cursor")
+                    square_size_int = int(SQUARE_SIZE)
+                    
+                    # Create a transparent pixmap for the cursor
+                    self.dragging_pixmap = QPixmap(square_size_int, square_size_int)
+                    self.dragging_pixmap.fill(Qt.transparent)  # Use transparent instead of red
+                    
+                    # Draw the chess piece on the transparent background
+                    painter = QPainter(self.dragging_pixmap)
+                    
+                    # Get piece SVG content
+                    piece_svg = chess.svg.piece(piece, size=square_size_int)
+                    
+                    # Create a renderer and render the SVG
+                    renderer = QSvgRenderer(bytes(piece_svg, 'utf-8'))
+                    renderer.render(painter)
+                    painter.end()
+                    
+                    # Save the pixmap for debugging
+                    debug_file = "debug_piece.png"
+                    self.dragging_pixmap.save(debug_file)
+                    debug_print(f"Saved debug pixmap to {debug_file}, exists: {os.path.exists(debug_file)}")
+                    
+                    # Update cursor position and show the dragged piece
+                    self.drag_position = QPoint(x, y)
+                    self.show_dragged_piece = True
+                    debug_print("Set show_dragged_piece to True")
+                    
+                    # Update board to remove the dragged piece from its original square
+                    self.update_board(square)
+                    
+                    # Only show legal moves that follow the opening
+                    if self.in_opening_phase and board.turn == chess.WHITE:
+                        self.possible_moves = []
+                        if self.opening_index < len(SELECTED_LINE['moves']):
+                            expected_move = chess.Move.from_uci(SELECTED_LINE['moves'][self.opening_index])
+                            if expected_move.from_square == square:
+                                self.possible_moves = [expected_move.to_square]
+                                debug_print(f"Expected move: {expected_move.uci()}")
+                    else:
+                        self.possible_moves = [move.to_square for move in board.legal_moves if move.from_square == square]
+                    
+                    # USE A CUSTOM CURSOR
+                    # Create a custom cursor that's definitely visible
+                    custom_cursor = QCursor(self.dragging_pixmap)
+                    self.board_widget.setCursor(custom_cursor)
+                    debug_print("Set custom cursor")
+                    
+                    # Force redraw
+                    self.board_widget.update()
+                    debug_print("Forced redraw")
+                    
+                except Exception as e:
+                    debug_print(f"Error setting up dragging: {e}")
+                    self.selected_square = None
+                    self.dragging_piece = None
+                    self.show_dragged_piece = False
+    
+    def handle_mouse_move(self, event):
+        if self.dragging_piece:
+            # Update the position of the dragged piece
+            self.drag_position = QPoint(event.x(), event.y())
+            if self.debug_count % 10 == 0:  # Only log occasionally
+                debug_print(f"Updated drag position to {event.x()}, {event.y()}")
+            # Redraw the board
+            self.board_widget.update()
+    
+    def handle_mouse_release(self, event):
+        if self.selected_square is None:
+            debug_print("Mouse release but no selected square")
+            return
+            
+        debug_print("Mouse release with selected square")
+        x, y = event.x(), event.y()
+        file = int(x / SQUARE_SIZE)
+        rank = 7 - int(y / SQUARE_SIZE)
+        
+        debug_print(f"Mouse release at ({x}, {y}) -> square ({file}, {rank})")
+        
+        # Stop showing the dragged piece
+        self.show_dragged_piece = False
+        
+        # Restore default cursor
+        self.board_widget.setCursor(Qt.ArrowCursor)
+        
+        if 0 <= file < 8 and 0 <= rank < 8:
+            target_square = chess.square(file, rank)
+            move = chess.Move(self.selected_square, target_square)
+            debug_print(f"Attempting move {move.uci()}")
+            
+            # Process move according to game rules
+            self.process_move(move)
+        else:
+            # Dropped outside the board, just restore the view
+            debug_print("Dropped outside board, restoring view")
+            self.update_board()
+        
+        # Reset dragging state
+        self.selected_square = None
+        self.dragging_piece = None
+        self.dragging_pixmap = None
+        self.drag_position = None
+        self.possible_moves = None
+        debug_print("Reset dragging state")
+        
+        # Redraw the board
+        self.board_widget.update()
 
-    # Draw white part of the bar
-    pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(eval_bar_x, eval_bar_y, eval_bar_width * white_ratio, eval_bar_height))
-
-    # Draw black part of the bar horizontally
-    pygame.draw.rect(screen, (0, 0, 0), pygame.Rect(eval_bar_x + eval_bar_width * white_ratio, eval_bar_y, eval_bar_width * black_ratio, eval_bar_height))
-
-    # Draw the outline of the eval bar
-    pygame.draw.rect(screen, (0, 0, 0), pygame.Rect(eval_bar_x, eval_bar_y, eval_bar_width, eval_bar_height), 2)
-
-    # Display the current opening and line
-    font = pygame.font.Font(None, 20)
-    current_line = SELECTED_LINE['name']
-    remaining_moves = len(OPENING_MOVES) - opening_index
-    opening_text = f"Opening: {SELECTED_OPENING} - {current_line} (Moves Left: {remaining_moves})"
-    opening_surface = font.render(opening_text, True, (0, 0, 0))
-    screen.blit(opening_surface, (10, BOARD_SIZE + eval_bar_height + 10))
-
-    # Display important game information
-    game_status_text = ""
-    if board.is_checkmate():
-        game_status_text = "Checkmate"
-    elif board.is_check():
-        game_status_text = "Check"
-    elif board.is_stalemate():
-        game_status_text = "Stalemate"
-
-    if game_status_text:
-        status_surface = font.render(game_status_text, True, (255, 0, 0))
-        screen.blit(status_surface, (10, BOARD_SIZE + eval_bar_height + 50))
-
-    pygame.display.flip()
-
-# Main game loop
-running = True
-selected_square = None
-dragging = False
-dragged_piece = None
-possible_moves = None
-board_needs_update = False
-
-def handle_stockfish_move():
-    with BOARD_LOCK:
-        if board.turn != chess.BLACK:
-            print("It's not Black's turn, returning early.")
-            return  # Stockfish should only move for Black
-
-        # Set the FEN position and verify
-        fen_position = board.fen()
-        stockfish.set_fen_position(fen_position)
-
-        time.sleep(1)  # Introduce a short delay
-        best_move = stockfish.get_best_move()
-
-        print(f"Stockfish best move: {best_move}")
-
-        # Ensure that Stockfish is only making moves for Black
-        if best_move and board.turn == chess.BLACK:
-            move = chess.Move.from_uci(best_move)
-
+    def process_move(self, move):
+        # Check if the move is legal and follows the opening
+        if self.in_opening_phase and board.turn == chess.WHITE:
+            if self.opening_index < len(SELECTED_LINE['moves']):
+                expected_move = chess.Move.from_uci(SELECTED_LINE['moves'][self.opening_index])
+                if move == expected_move:
+                    board.push(move)
+                    self.opening_index += 1
+                    self.update_board()
+                    self.analyze_position()
+                    
+                    # If it's black's turn, make the next opening move for black
+                    if board.turn == chess.BLACK and self.in_opening_phase:
+                        if self.opening_index < len(SELECTED_LINE['moves']):
+                            next_move = chess.Move.from_uci(SELECTED_LINE['moves'][self.opening_index])
+                            board.push(next_move)
+                            self.opening_index += 1
+                            self.update_board()
+                            self.analyze_position()
+                            
+                            # Check if opening is complete after black's move
+                            if self.opening_index >= len(SELECTED_LINE['moves']):
+                                self.in_opening_phase = False
+                                print("Opening phase completed!")
+                        else:
+                            # Opening completed, switch to Stockfish
+                            self.in_opening_phase = False
+                            print("Opening phase completed!")
+                            self.make_stockfish_move()
+                else:
+                    # Wrong move for the opening
+                    print(f"Incorrect move! Expected {expected_move.uci()} to follow the opening.")
+                    # Show the board with all pieces (restore the piece that was being dragged)
+                    self.update_board()
+            else:
+                # Opening completed, switch to regular play
+                self.in_opening_phase = False
+                if move in board.legal_moves:
+                    board.push(move)
+                    self.update_board()
+                    self.analyze_position()
+                    
+                    # If it's black's turn, let Stockfish make a move
+                    if board.turn == chess.BLACK:
+                        self.make_stockfish_move()
+                else:
+                    # Illegal move, restore the board
+                    self.update_board()
+        else:
+            # Not in opening phase or it's not white's turn
             if move in board.legal_moves:
                 board.push(move)
-
-                dragged_piece = None
-                possible_moves = None
+                self.update_board()
+                self.analyze_position()
                 
-                global board_surface
-
-                board_surface = render_board_surface()
-                draw_board()
-
-                analyze_with_stockfish_and_render()
-
-                # Ensure Stockfish continues to move if it's still Black's turn
+                # If it's black's turn, let Stockfish make a move
                 if board.turn == chess.BLACK:
-                    handle_stockfish_move()
+                    self.make_stockfish_move()
             else:
-                print(f"Illegal move by Stockfish: {best_move} in {board.fen()}")
-        else:
-            print("Stockfish did not return a valid move or attempted to move White's pieces.")
+                # Illegal move, restore the board
+                self.update_board()
 
-def process_player_move(uci_move):
-    global opening_index, selected_square, possible_moves, board_surface
-
-    move = chess.Move.from_uci(uci_move)
-
-    with BOARD_LOCK:
-
-        if board.turn != chess.WHITE:
-            print("It's not White's turn, returning early.")
-            return  # Only process the player's move if it's White's turn
-
-        if opening_index < len(SELECTED_LINE['moves']):
-            expected_move = SELECTED_LINE['moves'][opening_index]
-
-            if uci_move == expected_move:
-                board.push(chess.Move.from_uci(uci_move))
-                opening_index += 1
-
-                selected_square = None
-                possible_moves = None
-
-                # Update the board surface and render it immediately
-                board_surface = render_board_surface()
-                draw_board(selected_square)
-
-                if opening_index < len(SELECTED_LINE['moves']):
-                    expected_move = SELECTED_LINE['moves'][opening_index]
-                    board.push_uci(expected_move)
-                    opening_index += 1
-
-                    # Analyze the position immediately
-                    analyze_with_stockfish_and_render()
-
-                    if board.turn == chess.BLACK:
-                        print("Opening phase ended, Black's turn, triggering Stockfish...")
-                        handle_stockfish_move()
-                else:
-                    print("Opening sequence completed. Switching to Stockfish control.")
-                    if board.turn == chess.BLACK:
-                        handle_stockfish_move()
-            else:
-                print(f"Incorrect move. Expected: {expected_move}, but got: {uci_move}")
-        else:
-            if uci_move in [move.uci() for move in board.legal_moves]:
-                if board.piece_at(move.from_square).piece_type == chess.PAWN and chess.square_rank(move.to_square) in [0, 7]:
-                    move.promotion = chess.QUEEN  # Promote to queen by default
-                board.push(chess.Move.from_uci(uci_move))
-
-                # Immediate board update after move
-                board_surface = render_board_surface()
-                draw_board(selected_square)
-
-                # Analyze and move for Black immediately after the player's move
-                analyze_with_stockfish_and_render()
-
-                if board.turn == chess.BLACK:
-                    time.sleep(1)  # Introduce a delay before Stockfish makes its move
-                    best_move = stockfish.get_best_move()
-                    if best_move and board.turn == chess.BLACK:
-                        board.push_uci(best_move)
-                        analyze_with_stockfish_and_render()
+    def analyze_position(self):
+        with BOARD_LOCK:
+            stockfish.set_fen_position(board.fen())
+            try:
+                evaluation = stockfish.get_evaluation()
+                if evaluation['type'] == 'cp':
+                    white_eval = evaluation['value'] / 100.0
+                    black_eval = -white_eval
+                    self.eval_text.setText(f"White: {white_eval:.2f} | Black: {black_eval:.2f}")
+                elif evaluation['type'] == 'mate':
+                    if evaluation['value'] > 0:
+                        white_eval = f"M{evaluation['value']}"
+                        black_eval = f"M{-evaluation['value']}"
                     else:
-                        print("No valid move returned by Stockfish or Stockfish tried to move White's pieces.")
-            else:
-                print(f"Move {uci_move} is illegal. Ignoring.")
-
-dragging = False
-clicking = False  # New flag to distinguish between clicking and dragging
-dragged_piece = None
-selected_square = None
-possible_moves = None
-click_start_pos = None
-
-while running:
-    mouse_pos = pygame.mouse.get_pos()
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-            pygame.quit()
-            sys.exit()
-
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            # Start the click action
-            x, y = event.pos
-            if MARGIN <= x < SIZE[0] - MARGIN and MARGIN <= y < BOARD_SIZE - MARGIN:
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
-                square = chess.square(col, row)
-
-                piece = board.piece_at(square)
+                        white_eval = f"M{-evaluation['value']}"
+                        black_eval = f"M{evaluation['value']}"
+                    self.eval_text.setText(f"White: {white_eval} | Black: {black_eval}")
                 
-                if piece is not None and piece.color == chess.WHITE and board.turn == chess.WHITE:
-                    # If the clicked square has a piece, select it and show possible moves
-                    selected_square = square
-                    possible_moves = [move.to_square for move in board.legal_moves if move.from_square == selected_square]
-                    clicking = True
-                    click_start_pos = (x, y)
-                elif selected_square is not None and square in possible_moves:
-                    # If a piece is selected and the clicked square is a valid move, make the move
-                    move = chess.Move(selected_square, square)
-                    if move in board.legal_moves:
-                        uci_move = move.uci()
-                        process_player_move(uci_move)
-                        selected_square = None
-                        possible_moves = None
-                else:
-                    # Deselect if clicking on an empty square or invalid square
-                    selected_square = None
-                    possible_moves = None
+                # Update eval bar
+                self.eval_bar.set_eval(white_eval, black_eval)
+                
+            except Exception as e:
+                print(f"Error during Stockfish evaluation: {e}")
+                self.eval_text.setText("White: 0.00 | Black: 0.00")
+                self.eval_bar.set_eval(0.0, 0.0)
 
-        elif event.type == pygame.MOUSEMOTION:
-            if clicking:
-                # Detect if movement exceeds a threshold, then switch to dragging
-                if click_start_pos and (abs(event.pos[0] - click_start_pos[0]) > 10 or abs(event.pos[1] - click_start_pos[1]) > 10):
-                    dragging = True
-                    dragged_piece = selected_square
-                    clicking = False  # Cancel clicking when dragging starts
+    def make_stockfish_move(self):
+        with BOARD_LOCK:
+            if board.turn != chess.BLACK:
+                return
 
-        elif event.type == pygame.MOUSEBUTTONUP:
-            if dragging:
-                # Calculate the destination square
-                x, y = event.pos
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
-                destination_square = chess.square(col, row)
-
-                move = chess.Move(dragged_piece, destination_square)
+            stockfish.set_fen_position(board.fen())
+            best_move = stockfish.get_best_move()
+            
+            if best_move:
+                move = chess.Move.from_uci(best_move)
                 if move in board.legal_moves:
-                    uci_move = move.uci()
-                    process_player_move(uci_move)
+                    board.push(move)
+                    self.update_board()
+                    self.analyze_position()
 
-                dragging = False
-                dragged_piece = None
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Chess Opening Trainer")
+        
+        # Create central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Set up layout
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Create chess board
+        self.chess_board = ChessBoard(self)
+        layout.addWidget(self.chess_board)
+        
+        # Create info panel
+        info_panel = QWidget()
+        info_layout = QHBoxLayout(info_panel)
+        info_layout.setContentsMargins(10, 5, 10, 5)
+        
+        # Opening selector
+        self.opening_selector = QComboBox()
+        self.opening_selector.addItems([opening for opening in OPENING_MOVES.keys()])
+        # Set the current item to match the SELECTED_OPENING
+        self.opening_selector.setCurrentText(SELECTED_OPENING)
+        # Block signals during initialization to prevent triggering change_opening
+        self.opening_selector.blockSignals(True)
+        self.opening_selector.setCurrentText(SELECTED_OPENING)
+        self.opening_selector.blockSignals(False)
+        self.opening_selector.currentTextChanged.connect(self.change_opening)
+        info_layout.addWidget(QLabel("Opening:"))
+        info_layout.addWidget(self.opening_selector)
 
-            elif clicking and selected_square is not None:
-                # Handle click-to-move when releasing the mouse button
-                x, y = event.pos
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
-                target_square = chess.square(col, row)
+        # Line selector
+        self.line_selector = QComboBox()
+        self.update_line_selector()
+        self.line_selector.currentTextChanged.connect(self.change_line)
+        info_layout.addWidget(QLabel("Line:"))
+        info_layout.addWidget(self.line_selector)
 
-                if target_square in possible_moves:
-                    move = chess.Move(selected_square, target_square)
-                    if move in board.legal_moves:
-                        uci_move = move.uci()
-                        process_player_move(uci_move)
+        # Reset button
+        reset_button = QPushButton("Reset Position")
+        reset_button.clicked.connect(self.reset_position)
+        info_layout.addWidget(reset_button)
+        
+        layout.addWidget(info_panel)
+        
+        # Adjust size based on content
+        self.adjustSize()
 
-            # Reset dragging and clicking state
-            dragging = False
-            clicking = False
-            dragged_piece = None
+    def change_opening(self, opening_name):
+        global SELECTED_OPENING, OPENING_MOVES, SELECTED_LINE, board
+        try:
+            # Update the global opening name first
+            SELECTED_OPENING = opening_name
+            # Force the combobox to display the correct opening
+            if self.opening_selector.currentText() != opening_name:
+                self.opening_selector.blockSignals(True)
+                self.opening_selector.setCurrentText(opening_name)
+                self.opening_selector.blockSignals(False)
+                
+            # Force update the line selector with the new opening
+            self.line_selector.clear()
+            if opening_name in OPENING_MOVES:
+                self.line_selector.addItems([line['name'] for line in OPENING_MOVES[opening_name]])
+                SELECTED_LINE = OPENING_MOVES[opening_name][0]
+                self.line_selector.setCurrentText(SELECTED_LINE['name'])
+            
+            # Reset the board and update the UI
+            board = chess.Board()
+            self.chess_board.opening_index = 0
+            self.chess_board.in_opening_phase = True
+            self.chess_board.update_board()
+            self.chess_board.analyze_position()
+        except Exception as e:
+            print(f"Error changing opening: {e}")
+            # Revert to previous opening if there's an error
+            self.opening_selector.setCurrentText(SELECTED_OPENING)
 
-    # Draw the board and any other UI elements
-    draw_board(selected_square, dragged_piece, mouse_pos, possible_moves)
+    def change_line(self, line_name):
+        global SELECTED_LINE, OPENING_MOVES, board
+        try:
+            # Find and set the new line
+            SELECTED_LINE = next(line for line in OPENING_MOVES[SELECTED_OPENING] if line['name'] == line_name)
+            # Reset the board and update the UI
+            board = chess.Board()
+            self.chess_board.opening_index = 0
+            self.chess_board.in_opening_phase = True
+            self.chess_board.update_board()
+            self.chess_board.analyze_position()
+        except Exception as e:
+            print(f"Error changing line: {e}")
+            # Revert to previous line if there's an error
+            self.line_selector.setCurrentText(SELECTED_LINE['name'])
 
-pygame.quit()
+    def update_line_selector(self):
+        try:
+            self.line_selector.clear()
+            if SELECTED_OPENING in OPENING_MOVES:
+                self.line_selector.addItems([line['name'] for line in OPENING_MOVES[SELECTED_OPENING]])
+                # Ensure the current line is selected
+                if SELECTED_LINE:
+                    self.line_selector.setCurrentText(SELECTED_LINE['name'])
+        except Exception as e:
+            print(f"Error updating line selector: {e}")
+
+    def reset_position(self):
+        try:
+            global board
+            board = chess.Board()
+            self.chess_board.opening_index = 0
+            self.chess_board.in_opening_phase = True
+            self.chess_board.update_board()
+            self.chess_board.analyze_position()
+        except Exception as e:
+            print(f"Error resetting position: {e}")
+
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()

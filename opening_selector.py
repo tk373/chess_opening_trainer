@@ -1,31 +1,34 @@
-import pygame
+from PyQt5.QtWidgets import QApplication, QDialog, QVBoxLayout, QPushButton, QLabel
+from PyQt5.QtCore import Qt
 
 def select_opening(openings):
-    pygame.init()
-    opening_selected = None
-    font = pygame.font.Font(None, 36)
-    select_screen = pygame.display.set_mode((400, 300))
-    pygame.display.set_caption('Select Opening')
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    
+    dialog = QDialog()
+    dialog.setWindowTitle('Select Opening')
+    dialog.setFixedSize(400, 300)
+    
+    layout = QVBoxLayout()
+    
+    # Add a label
+    label = QLabel("Select an opening:")
+    layout.addWidget(label)
+    
+    # Create buttons for each opening
+    opening_selected = [None]  # Use a list to store the selection
+    
+    def on_opening_selected(opening):
+        opening_selected[0] = opening
+        dialog.accept()
 
-    while opening_selected is None:
-        select_screen.fill((255, 255, 255))
-        y = 50
+    for opening_name in openings:
+        button = QPushButton(opening_name)
+        button.clicked.connect(lambda checked, name=opening_name: on_opening_selected(name))
+        layout.addWidget(button)
+    
+    dialog.setLayout(layout)
+    dialog.exec_()
 
-        for opening_name in openings:  # Directly iterate over the dict_keys object
-            text = font.render(opening_name, True, (0, 0, 0))
-            select_screen.blit(text, (50, y))
-            y += 50
-
-        pygame.display.flip()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                x, y = event.pos
-                selected_index = (y - 50) // 50
-                if 0 <= selected_index < len(openings):
-                    opening_selected = list(openings)[selected_index]
-
-    return opening_selected
+    return opening_selected[0]

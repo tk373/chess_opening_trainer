@@ -1,13 +1,9 @@
-import pygame
 import chess
 import random
 import threading
 from stockfish import Stockfish
 from opening_selector import select_opening
 from openings import openings
-
-# Initialize pygame
-pygame.init()
 
 # Board and screen configurations
 BOARD_SIZE = 600  # Keep the board size fixed
@@ -20,14 +16,14 @@ MARGIN = (BOARD_SIZE - BOARD_SIZE * SCALING_FACTOR) / 2
 SQUARE_SIZE = (BOARD_SIZE * SCALING_FACTOR) / 8
 
 # Stockfish configuration
-STOCKFISH_PATH = r"path/to/stockfish"  # Set the correct path to your Stockfish binary
+STOCKFISH_PATH = r"/home/sheg/Downloads/stockfish-ubuntu-x86-64-sse41-popcnt/stockfish/stockfish-ubuntu-x86-64-sse41-popcnt"  # Set the correct path to your Stockfish binary
 STOCKFISH_SKILL_LEVEL = 12  # You can adjust the skill level
 
 # Select opening before loading the main game
 SELECTED_OPENING = select_opening(openings.keys())  # Choose from the available openings
 OPENING_LINES = openings[SELECTED_OPENING]
 SELECTED_LINE = random.choice(OPENING_LINES)  # Select one random line at the start
-OPENING_MOVES = SELECTED_LINE['moves']  # Get the moves of the selected line
+OPENING_MOVES = openings  # Store all openings
 
 # Thread lock for the chessboard
 BOARD_LOCK = threading.RLock()
